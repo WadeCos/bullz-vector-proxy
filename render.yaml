@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: bullz-vector-proxy
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ACTION_SHARED_SECRET
+        generateValue: true
+      - key: ALLOW_ORIGINS
+        value: https://chat.openai.com
+      # Optional: to pin exact name or id
+      - key: VECTOR_STORE_NAME
+        value: bullz-vector-store
+      # - key: VECTOR_STORE_ID
+      #   value: vs_xxx   # leave unset to auto-create/find by name

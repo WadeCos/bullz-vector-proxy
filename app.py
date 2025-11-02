@@ -188,7 +188,7 @@ with httpx.Client(timeout=60) as _http:
 # --- end REST call ---
 
     # Return structured output (includes citations)
-    return resp.output
+# NOTE: removed stray 'return resp.output' that caused SyntaxError
 
 from routes_search_fix import router as search_fix_router
 try:
@@ -264,7 +264,7 @@ def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
         return vsid
 # --- end safe resolver ---
 
-# redeploy-marker: 1762120631
+# redeploy-marker: 1762123149
 
 def _collect_text_deep(node):
     out = []

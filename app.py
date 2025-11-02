@@ -190,4 +190,4 @@ def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
         return vsid
 # --- end safe resolver ---
 
-# redeploy-marker: 1762114813
+# redeploy-marker: 1762116325

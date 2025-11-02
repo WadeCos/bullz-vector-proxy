@@ -1,3 +1,40 @@
+# === Bullz Mega Guard (do not remove) ===
+# Guarantees imports & core names exist before any class/def use.
+import os, json, typing
+try:
+    import requests  # HTTP client for upstream calls
+except Exception:  # extremely rare on Render
+    requests = None  # we will error later with a helpful message
+
+# Prefer pydantic BaseModel; fallback prevents NameError at import time
+try:
+    from pydantic import BaseModel
+except Exception:
+    class BaseModel:  # minimal shim
+        def __init__(self, **data):
+            for k, v in data.items():
+                setattr(self, k, v)
+
+# FastAPI core
+try:
+    from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Request, Response, status
+    from fastapi.middleware.cors import CORSMiddleware
+except Exception as e:
+    # Give a readable error if FastAPI isn't available (instead of NameError)
+    raise RuntimeError("FastAPI is not installed. Add 'fastapi' and 'uvicorn' to requirements.txt") from e
+
+# Create app if not already defined by user code below
+if 'app' not in globals():
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+# === /Bullz Mega Guard ===
+
 # === BaseModel guard (do not remove) ===
 try:
     from pydantic import BaseModel  # preferred
@@ -131,49 +168,7 @@ def check_secret(secret: str | None):
     if not secret or secret != ACTION_SHARED_SECRET:
         raise HTTPException(status_code=401, detail="bad secret")
 
-@app.get("/health")
-def health():
-    return {"ok": True}
 
-@app.get("/info")
-def info():
-    return {"vector_store_id": VECTOR_STORE_ID, "vector_store_name": VECTOR_STORE_NAME}
-
-@app.post("/upload")
-async def upload(file: UploadFile = File(...), namespace: str | None = None,
-                 x_action_secret: str | None = Header(None)):
-    check_secret(x_action_secret)
-
-    # 1) Upload file to OpenAI Files
-    data = await file.read()
-    ofile = client.files.create(
-        file=(file.filename, data, file.content_type or "application/octet-stream"),
-        purpose="assistants"
-    )
-
-    # 2) Attach to Vector Store (beta API)
-    client.beta.vector_stores.files.create(
-        vector_store_id=VECTOR_STORE_ID,
-        file_id=ofile.id
-    )
-
-    # 3) Optional: tag with namespace (metadata)
-    if namespace:
-        try:
-            client.files.update(ofile.id, metadata={"namespace": namespace})
-        except Exception as e:
-            # If metadata update isn't supported in your region/version, just log and continue
-            print(f"[upload] metadata update skipped: {e}", flush=True)
-
-    return {"ok": True, "file_id": ofile.id, "namespace": namespace}
-
-class SearchReq(BaseModel):
-    query: str
-    top_k: int | None = 6
-    namespace: str | None = None
-
-@app.post("/search")
-def search(body: SearchBody, x_action_secret: str = Header(None, alias="X-Action-Secret")):
     check_secret(x_action_secret)
 
     # Responses API with file_search tool and your Vector Store attached
@@ -286,7 +281,7 @@ def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
         return vsid
 # --- end safe resolver ---
 
-# redeploy-marker: 1762124901
+# redeploy-marker: 1762125875
 
 def _collect_text_deep(node):
     out = []
@@ -300,3 +295,67 @@ def _collect_text_deep(node):
         for v in node:
             out.extend(_collect_text_deep(v))
     return out
+
+@app.post("/search")
+def search(
+    body: SearchBody,
+    request: Request,
+    x_action_secret: str = Header(None, alias="X-Action-Secret"),
+):
+    # Auth
+    expected = os.getenv("ACTION_SHARED_SECRET", "")
+    if not expected or x_action_secret != expected:
+        raise HTTPException(status_code=401, detail="bad secret")
+
+    # Runtime deps
+    if requests is None:
+        raise HTTPException(status_code=500, detail="requests not available on server")
+
+    # Required env
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="missing OPENAI_API_KEY")
+
+    vector_store_id = os.getenv("VECTOR_STORE_ID", "")
+    if not vector_store_id:
+        raise HTTPException(status_code=500, detail="missing VECTOR_STORE_ID")
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+
+    # Build OpenAI Responses API payload
+    payload: dict = {
+        "model": model,
+        "input": body.query,
+        "tools": [{"type": "file_search"}],
+        "tool_resources": {"file_search": {"vector_store_ids": [vector_store_id]}},
+    }
+    # Optional namespace hint (carried via metadata)
+    if body.namespace:
+        payload["metadata"] = {"namespace": body.namespace}
+    # Optional top_k hint (some SDKs support per-query overrides; for Responses API we let server config drive recall)
+    _ = body.top_k  # kept for compatibility; not directly used in payload here
+
+    # Call OpenAI Responses API
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps(payload),
+            timeout=60,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"upstream error: {e}")
+
+    if resp.status_code >= 400:
+        try:
+            return {"upstream_status": resp.status_code, "error": resp.json()}
+        except Exception:
+            return {"upstream_status": resp.status_code, "error_text": resp.text}
+
+    try:
+        return resp.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="invalid JSON from upstream")

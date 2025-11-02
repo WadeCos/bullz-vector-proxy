@@ -115,3 +115,9 @@ def search(body: SearchReq, x_action_secret: str | None = Header(None)):
 
     # Return structured output (includes citations)
     return resp.output
+
+from routes_search_fix import router as search_fix_router
+try:
+    app.include_router(search_fix_router)
+except Exception:
+    pass

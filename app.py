@@ -156,12 +156,15 @@ def search(body: SearchReq, x_action_secret: str | None = Header(None)):
 
     # Responses API with file_search tool and your Vector Store attached
     resp = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[{"role":"user","content": body.query}],
-        tools=[{"type":"file_search"}],
-        tool_choice="file_search",
-        file_search={"vector_stores":[{"vector_store_id": VECTOR_STORE_ID}]}
-    )
+    model=os.getenv("SEARCH_MODEL", "gpt-4.1-mini"),
+    input=[{
+        "role": "user",
+        "content": [{"type": "input_text", "text": body.query}]
+    }],
+    tools=[{"type": "file_search"}],
+    tool_resources={"file_search": {"vector_store_ids": [VECTOR_STORE_ID]}},
+    metadata={"origin": "bullz-vector-proxy", "top_k": int(body.top_k or 6)},
+)
 
     # Return structured output (includes citations)
     return resp.output
@@ -240,4 +243,17 @@ def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
         return vsid
 # --- end safe resolver ---
 
-# redeploy-marker: 1762116863
+# redeploy-marker: 1762119230
+
+def _collect_text_deep(node):
+    out = []
+    if isinstance(node, dict):
+        t = node.get("type")
+        if t in ("output_text","text") and "text" in node:
+            out.append(node["text"])
+        for v in node.values():
+            out.extend(_collect_text_deep(v))
+    elif isinstance(node, list):
+        for v in node:
+            out.extend(_collect_text_deep(v))
+    return out

@@ -1,10 +1,11 @@
 from typing import Optional
 import os, secrets
+import os
 class SearchBody(BaseModel):
     query: str
     top_k: Optional[int] = 6
     namespace: Optional[str] = None
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Header, UploadFile
 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -158,7 +159,7 @@ class SearchReq(BaseModel):
     namespace: str | None = None
 
 @app.post("/search")
-def search(body: SearchBody, x_action_secret: str = Header(None)):
+def search(body: SearchBody, x_action_secret: str = Header(None, alias="X-Action-Secret")):
     check_secret(x_action_secret)
 
     # Responses API with file_search tool and your Vector Store attached
@@ -271,7 +272,7 @@ def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
         return vsid
 # --- end safe resolver ---
 
-# redeploy-marker: 1762123841
+# redeploy-marker: 1762124657
 
 def _collect_text_deep(node):
     out = []

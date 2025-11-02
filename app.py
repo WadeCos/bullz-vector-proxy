@@ -45,6 +45,56 @@ def ensure_vector_store(vs_id: str, vs_name: str) -> str:
     except Exception as e:
         print(f"[startup] ERROR ensuring vector store: {e}", flush=True)
         raise
+# --- Version-agnostic vector store resolver (SDK then REST fallback) ---
+def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
+    import os, sys, json, httpx
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception:
+        OpenAI = None  # type: ignore
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY missing")
+    if vs_id:
+        return vs_id
+    # SDK path first (if available)
+    if OpenAI is not None:
+        try:
+            client = OpenAI(api_key=api_key)
+            beta = getattr(client, "beta", None)
+            if beta and hasattr(beta, "vector_stores"):
+                try:
+                    stores = list(beta.vector_stores.list(limit=100))
+                    for store in stores:
+                        if getattr(store, "name", None) == vs_name:
+                            return store.id
+                except Exception:
+                    pass
+                vs = beta.vector_stores.create(name=vs_name)
+                return vs.id
+        except Exception as e:
+            print(f"[ensure_vector_store_safe] SDK path failed: {e}", file=sys.stderr)
+    # REST fallback (works on any SDK version)
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    import httpx as _httpx
+    with _httpx.Client(timeout=60) as http:
+        r = http.get("https://api.openai.com/v1/vector_stores", headers=headers)
+        if r.status_code >= 400:
+            raise RuntimeError(f"vector_stores list failed: {r.status_code} {r.text}")
+        data = r.json(); items = data.get("data") if isinstance(data, dict) else None
+        if isinstance(items, list):
+            for store in items:
+                if store.get("name") == vs_name and store.get("id"):
+                    return store["id"]
+        r = http.post("https://api.openai.com/v1/vector_stores", headers=headers, json={"name": vs_name})
+        if r.status_code >= 400:
+            raise RuntimeError(f"vector_stores create failed: {r.status_code} {r.text}")
+        vsid = r.json().get("id")
+        if not vsid:
+            raise RuntimeError("vector_stores create returned no id")
+        return vsid
+# --- end safe resolver ---
+
 
 VECTOR_STORE_ID = ensure_vector_store_safe(VECTOR_STORE_ID, VECTOR_STORE_NAME)
 
@@ -190,4 +240,4 @@ def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
         return vsid
 # --- end safe resolver ---
 
-# redeploy-marker: 1762116325
+# redeploy-marker: 1762116863

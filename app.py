@@ -155,16 +155,37 @@ def search(body: SearchReq, x_action_secret: str | None = Header(None)):
     check_secret(x_action_secret)
 
     # Responses API with file_search tool and your Vector Store attached
-    resp = client.responses.create(
-    model=os.getenv("SEARCH_MODEL", "gpt-4.1-mini"),
-    input=[{
+    # --- REST call to /v1/responses (supports tool_resources across SDK versions) ---
+import os, json, httpx
+_model = os.getenv("SEARCH_MODEL", "gpt-4.1-mini")
+_api_key = os.getenv("OPENAI_API_KEY")
+if not _api_key:
+    raise RuntimeError("OPENAI_API_KEY missing")
+
+_payload = {
+    "model": _model,
+    "input": [{
         "role": "user",
         "content": [{"type": "input_text", "text": body.query}]
     }],
-    tools=[{"type": "file_search"}],
-    tool_resources={"file_search": {"vector_store_ids": [VECTOR_STORE_ID]}},
-    metadata={"origin": "bullz-vector-proxy", "top_k": int(body.top_k or 6)},
-)
+    "tools": [{"type": "file_search"}],
+    "tool_resources": {"file_search": {"vector_store_ids": [VECTOR_STORE_ID]}},
+    "metadata": {"origin": "bullz-vector-proxy", "top_k": int(body.top_k or 6)},
+}
+
+with httpx.Client(timeout=60) as _http:
+    _r = _http.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {_api_key}",
+            "Content-Type": "application/json",
+        },
+        json=_payload,
+    )
+    if _r.status_code >= 400:
+        raise RuntimeError(f"/v1/responses failed: {_r.status_code} {_r.text}")
+    resp = _r.json()
+# --- end REST call ---
 
     # Return structured output (includes citations)
     return resp.output
@@ -243,7 +264,7 @@ def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
         return vsid
 # --- end safe resolver ---
 
-# redeploy-marker: 1762119230
+# redeploy-marker: 1762120631
 
 def _collect_text_deep(node):
     out = []

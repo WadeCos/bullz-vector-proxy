@@ -1,46 +1,58 @@
-import os
+import os, secrets
 from fastapi import FastAPI, File, UploadFile, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
 
-# --- Config via env ---
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]           # required
-ACTION_SHARED_SECRET = os.environ["ACTION_SHARED_SECRET"]  # required
+# --- Env config ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is not set. Add it in Render → Settings → Environment.")
+
+ACTION_SHARED_SECRET = os.getenv("ACTION_SHARED_SECRET")
+if not ACTION_SHARED_SECRET:
+    ACTION_SHARED_SECRET = "bullz_" + secrets.token_hex(24)
+    print(f"[startup] ACTION_SHARED_SECRET was missing. Generated one-time secret: {ACTION_SHARED_SECRET}", flush=True)
+
 ALLOW_ORIGINS = os.getenv("ALLOW_ORIGINS", "https://chat.openai.com")
-VECTOR_STORE_ID = os.getenv("VECTOR_STORE_ID", "").strip()
+VECTOR_STORE_ID = (os.getenv("VECTOR_STORE_ID") or "").strip()
 VECTOR_STORE_NAME = os.getenv("VECTOR_STORE_NAME", "bullz-vector-store")
 
-# --- OpenAI client ---
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- Ensure a Vector Store exists (create if missing) ---
 def ensure_vector_store(vs_id: str, vs_name: str) -> str:
-    if vs_id:
-        return vs_id
-    # Try to find by name
+    """
+    Ensure a vector store exists. Try env ID, then find by name, else create.
+    Uses the beta.vector_stores API.
+    """
     try:
-        stores = client.vector_stores.list()
-        for s in stores.data:
-            if (getattr(s, "name", None) or "") == vs_name:
+        if vs_id:
+            print(f"[startup] Using VECTOR_STORE_ID from env: {vs_id}", flush=True)
+            return vs_id
+
+        # find by name
+        stores = client.beta.vector_stores.list()
+        for s in getattr(stores, "data", []):
+            if (getattr(s, "name", "") or "") == vs_name:
+                print(f"[startup] Using existing vector store: {s.id} ({vs_name})", flush=True)
                 return s.id
-    except Exception:
-        pass
-    # Create new
-    vs = client.vector_stores.create(name=vs_name)
-    print(f"[startup] Created vector store: {vs.id} ({vs_name})", flush=True)
-    return vs.id
+
+        # create new
+        vs = client.beta.vector_stores.create(name=vs_name)
+        print(f"[startup] Created vector store: {vs.id} ({vs_name})", flush=True)
+        return vs.id
+
+    except Exception as e:
+        print(f"[startup] ERROR ensuring vector store: {e}", flush=True)
+        raise
 
 VECTOR_STORE_ID = ensure_vector_store(VECTOR_STORE_ID, VECTOR_STORE_NAME)
 
-# --- FastAPI app ---
-app = FastAPI(title="Bullz Vector Proxy", version="1.1.0")
+app = FastAPI(title="Bullz Vector Proxy", version="1.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[ALLOW_ORIGINS] if ALLOW_ORIGINS != "*" else ["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
 
 def check_secret(secret: str | None):
@@ -59,14 +71,28 @@ def info():
 async def upload(file: UploadFile = File(...), namespace: str | None = None,
                  x_action_secret: str | None = Header(None)):
     check_secret(x_action_secret)
+
+    # 1) Upload file to OpenAI Files
     data = await file.read()
     ofile = client.files.create(
         file=(file.filename, data, file.content_type or "application/octet-stream"),
         purpose="assistants"
     )
-    client.vector_stores.files.create(vector_store_id=VECTOR_STORE_ID, file_id=ofile.id)
+
+    # 2) Attach to Vector Store (beta API)
+    client.beta.vector_stores.files.create(
+        vector_store_id=VECTOR_STORE_ID,
+        file_id=ofile.id
+    )
+
+    # 3) Optional: tag with namespace (metadata)
     if namespace:
-        client.files.update(ofile.id, metadata={"namespace": namespace})
+        try:
+            client.files.update(ofile.id, metadata={"namespace": namespace})
+        except Exception as e:
+            # If metadata update isn't supported in your region/version, just log and continue
+            print(f"[upload] metadata update skipped: {e}", flush=True)
+
     return {"ok": True, "file_id": ofile.id, "namespace": namespace}
 
 class SearchReq(BaseModel):
@@ -77,6 +103,8 @@ class SearchReq(BaseModel):
 @app.post("/search")
 def search(body: SearchReq, x_action_secret: str | None = Header(None)):
     check_secret(x_action_secret)
+
+    # Responses API with file_search tool and your Vector Store attached
     resp = client.responses.create(
         model="gpt-4.1-mini",
         input=[{"role":"user","content": body.query}],
@@ -84,4 +112,6 @@ def search(body: SearchReq, x_action_secret: str | None = Header(None)):
         tool_choice="file_search",
         file_search={"vector_stores":[{"vector_store_id": VECTOR_STORE_ID}]}
     )
+
+    # Return structured output (includes citations)
     return resp.output

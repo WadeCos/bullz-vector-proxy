@@ -1,3 +1,14 @@
+# === BaseModel guard (do not remove) ===
+try:
+    from pydantic import BaseModel  # preferred
+except Exception:
+    # Minimal fallback to prevent NameError if pydantic import fails at runtime.
+    class BaseModel:  # type: ignore
+        def __init__(self, **data):
+            for k, v in data.items():
+                setattr(self, k, v)
+# === /BaseModel guard ===
+
 from fastapi import Header, HTTPException
 from typing import Optional
 import os, secrets

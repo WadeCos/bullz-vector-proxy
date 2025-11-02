@@ -4,10 +4,11 @@ class SearchBody(BaseModel):
     query: str
     top_k: Optional[int] = 6
     namespace: Optional[str] = None
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 
-from fastapi import FastAPI, File, HTTPException, Header, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 from openai import OpenAI
 
 # --- Env config ---
@@ -270,7 +271,7 @@ def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
         return vsid
 # --- end safe resolver ---
 
-# redeploy-marker: 1762123545
+# redeploy-marker: 1762123841
 
 def _collect_text_deep(node):
     out = []

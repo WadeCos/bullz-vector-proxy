@@ -46,7 +46,7 @@ def ensure_vector_store(vs_id: str, vs_name: str) -> str:
         print(f"[startup] ERROR ensuring vector store: {e}", flush=True)
         raise
 
-VECTOR_STORE_ID = ensure_vector_store(VECTOR_STORE_ID, VECTOR_STORE_NAME)
+VECTOR_STORE_ID = ensure_vector_store_safe(VECTOR_STORE_ID, VECTOR_STORE_NAME)
 
 app = FastAPI(title="Bullz Vector Proxy", version="1.3.0")
 app.add_middleware(
@@ -121,3 +121,71 @@ try:
     app.include_router(search_fix_router)
 except Exception:
     pass
+
+# --- Version-agnostic vector store resolver (SDK then REST fallback) ---
+def ensure_vector_store_safe(vs_id: str | None, vs_name: str) -> str:
+    """
+    Works across old/new OpenAI SDKs.
+    1) Try SDK: client.beta.vector_stores.list/create if available.
+    2) Fallback to REST: GET/POST https://api.openai.com/v1/vector_stores
+    Returns a vector_store_id.
+    """
+    import os, sys, json
+    import httpx
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception:
+        OpenAI = None  # type: ignore
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY missing")
+
+    # If caller already provided a store id, accept it
+    if vs_id:
+        return vs_id
+
+    # 1) Try SDK first (if installed and has beta.vector_stores)
+    client = None
+    if OpenAI is not None:
+        try:
+            client = OpenAI(api_key=api_key)
+            beta = getattr(client, "beta", None)
+            if beta and hasattr(beta, "vector_stores"):
+                # List to find by name
+                try:
+                    stores = list(beta.vector_stores.list(limit=100))
+                    for s in stores:
+                        if getattr(s, "name", None) == vs_name:
+                            return s.id
+                except Exception:
+                    pass
+                # Create if not found
+                vs = beta.vector_stores.create(name=vs_name)
+                return vs.id
+        except Exception as e:
+            print(f"[ensure_vector_store_safe] SDK path failed: {e}", file=sys.stderr)
+
+    # 2) REST fallback (works regardless of SDK version)
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    with httpx.Client(timeout=60) as http:
+        # list and find by name
+        r = http.get("https://api.openai.com/v1/vector_stores", headers=headers)
+        if r.status_code >= 400:
+            raise RuntimeError(f"vector_stores list failed: {r.status_code} {r.text}")
+        data = r.json()
+        items = data.get("data") if isinstance(data, dict) else None
+        if isinstance(items, list):
+            for s in items:
+                if s.get("name") == vs_name and s.get("id"):
+                    return s["id"]
+        # create new
+        r = http.post("https://api.openai.com/v1/vector_stores", headers=headers, json={"name": vs_name})
+        if r.status_code >= 400:
+            raise RuntimeError(f"vector_stores create failed: {r.status_code} {r.text}")
+        created = r.json()
+        vsid = created.get("id")
+        if not vsid:
+            raise RuntimeError("vector_stores create returned no id")
+        return vsid
+# --- end safe resolver ---

@@ -1,3 +1,4 @@
+from fastapi import Header, HTTPException
 from typing import Optional
 import os, secrets
 import os

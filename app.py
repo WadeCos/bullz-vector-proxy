@@ -17,16 +17,21 @@ def require_secret(x_action_secret: Optional[str]):
     if not expected or x_action_secret != expected:
         raise HTTPException(status_code=401, detail="bad secret")
 
-def openai_headers() -> dict:
+def openai_headers_json() -> dict:
     key = os.getenv("OPENAI_API_KEY", "").strip()
     if not (key.startswith("sk-") and len(key) > 20):
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
-    # Force JSON and v2 Beta for Responses API
     return {
         "Authorization": f"Bearer {key}",
         "OpenAI-Beta": "assistants=v2",
         "Content-Type": "application/json",
     }
+
+def openai_headers_noctype() -> dict:
+    # same as above but without Content-Type so we can send multipart
+    h = openai_headers_json().copy()
+    h.pop("Content-Type", None)
+    return h
 
 def get_vs() -> str:
     vs = os.getenv("VECTOR_STORE_ID", "").strip()
@@ -56,7 +61,7 @@ def authcheck(x_action_secret: str = Header(None, alias="X-Action-Secret")):
     require_secret(x_action_secret)
     return {"ok": True}
 
-# -------- Upload (Assistants v2 vector store file attach) --------
+# -------- Upload (two-step: /files multipart, then attach via JSON) --------
 @app.post("/upload")
 def upload(
     x_action_secret: str = Header(None, alias="X-Action-Secret"),
@@ -65,32 +70,49 @@ def upload(
 ):
     require_secret(x_action_secret)
     vs = get_vs()
-    headers = openai_headers()
 
-    url = f"https://api.openai.com/v1/vector_stores/{vs}/files"
-    files = {"file": (file.filename, file.file)}
-    data = {}  # namespace not supported directly here; can encode via metadata later if needed
+    # 1) Upload binary to /v1/files (multipart/form-data)
     try:
-        r = requests.post(url, headers={k:v for k,v in headers.items() if k != "Content-Type"},
-                          files=files, data=data, timeout=120)
+        r1 = requests.post(
+            "https://api.openai.com/v1/files",
+            headers=openai_headers_noctype(),
+            files={"file": (file.filename, file.file)},
+            data={"purpose": "assistants"},
+            timeout=120
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"upstream error: {str(e)}")
-    if r.status_code != 200:
+    if r1.status_code != 200:
         try:
-            body = r.json()
+            b1 = r1.json()
         except Exception:
-            body = {"text": r.text}
-        return {"upstream_status": r.status_code, "error": body}, r.status_code
-    out = r.json()
-    return {
-        "ok": True,
-        "file_id": out.get("id") or (out.get("data") or [{}])[0].get("id"),
-        "vector_store_id": vs,
-        "namespace": namespace,
-        "attach": out,
-    }
+            b1 = {"text": r1.text}
+        return {"stage": "upload", "upstream_status": r1.status_code, "error": b1}, r1.status_code
+    file_json = r1.json()
+    file_id = file_json.get("id")
+    if not file_id:
+        raise HTTPException(status_code=502, detail="upstream error: missing file id")
 
-# -------- Search (Responses API, file_search tool) --------
+    # 2) Attach file_id to vector store with JSON
+    try:
+        r2 = requests.post(
+            f"https://api.openai.com/v1/vector_stores/{vs}/files",
+            headers=openai_headers_json(),
+            json={"file_id": file_id},
+            timeout=60
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"upstream error: {str(e)}")
+    if r2.status_code != 200:
+        try:
+            b2 = r2.json()
+        except Exception:
+            b2 = {"text": r2.text}
+        return {"stage": "attach", "upstream_status": r2.status_code, "error": b2}, r2.status_code
+
+    return {"ok": True, "file_id": file_id, "vector_store_id": vs, "namespace": namespace, "attach": r2.json()}
+
+# -------- Search (Responses API; robust fallback) --------
 @app.post("/search")
 def search(
     body: SearchBody,
@@ -98,9 +120,10 @@ def search(
 ):
     require_secret(x_action_secret)
     vs = get_vs()
-    headers = openai_headers()
+    headers = openai_headers_json()
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
+    # Primary payload (v2, tool_resources at top-level)
     payload = {
         "model": model,
         "input": [
@@ -114,41 +137,50 @@ def search(
         "tool_resources": {"file_search": {"vector_store_ids": [vs]}},
     }
 
-    # Primary attempt (v2 Beta)
     try:
         r = requests.post("https://api.openai.com/v1/responses", headers=headers, json=payload, timeout=120)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"upstream error: {str(e)}")
 
-    # If 400 and tool_resources rejected (beta header ignored upstream), fallback without tool_resources
+    # If 'tool_resources' rejected or unsupported, fallback by embedding vector_store_ids into tools[0].file_search
     if r.status_code == 400:
         try:
             err = r.json()
         except Exception:
             err = {"text": r.text}
-        if "Unknown parameter: 'tool_resources'" in json.dumps(err):
-            fallback = dict(payload)
-            fallback.pop("tool_resources", None)
+        msg = json.dumps(err)
+        if ("Unknown parameter: 'tool_resources'" in msg) or ("tools[0].vector_store_ids" in msg):
+            fallback = {
+                "model": model,
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": body.query}]}
+                ],
+                "tools": [{"type": "file_search", "file_search": {"vector_store_ids": [vs]}}],
+                "tool_choice": "auto",
+                "metadata": {"source": "bullz-vector-proxy", "namespace": body.namespace},
+                "max_output_tokens": 800,
+                "temperature": 0.2
+            }
             try:
                 r2 = requests.post("https://api.openai.com/v1/responses", headers=headers, json=fallback, timeout=120)
             except Exception as e:
                 raise HTTPException(status_code=502, detail=f"upstream error: {str(e)}")
             if r2.status_code != 200:
                 try:
-                    body_json = r2.json()
+                    b2 = r2.json()
                 except Exception:
-                    body_json = {"text": r2.text}
+                    b2 = {"text": r2.text}
                 return [{"upstream_status": r.status_code, "error": err},
-                        {"upstream_status": r2.status_code, "error": body_json}], 502
+                        {"upstream_status": r2.status_code, "error": b2}], 502
             return {"ok": True, "response": r2.json()}
 
     if r.status_code != 200:
         try:
-            body_json = r.json()
+            b = r.json()
         except Exception:
-            body_json = {"text": r.text}
-        return {"upstream_status": r.status_code, "error": body_json}, 502
+            b = {"text": r.text}
+        return {"upstream_status": r.status_code, "error": b}, 502
 
     return {"ok": True, "response": r.json()}
 
-# redeploy-marker: CLEAN-REWRITE
+# redeploy-marker: FINAL-FIX

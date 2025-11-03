@@ -16,3 +16,7 @@ fastapi>=0.111
 uvicorn[standard]>=0.30
 pydantic>=2.7
 requests>=2.32
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7
+requests>=2.32

@@ -1,5 +1,8 @@
 # --- Bullz Vector Proxy: clean, fully-defined app.py (no module-scope 'body' refs) ---
 import os, json, typing
+from typing import Optional
+import json
+import os
 import requests
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,11 +105,7 @@ async def upload(
     }
 
 @app.post("/search")
-def search(
-    body: SearchBody,
-    request: Request,
-    x_action_secret: str = Header(None, alias="X-Action-Secret"),
-):
+def search(body: SearchBody, x_action_secret: str = Header(None, alias="X-Action-Secret")):
     _require_secret(x_action_secret)
     api_key = _env("OPENAI_API_KEY")
     vector_store_id = _env("VECTOR_STORE_ID")
@@ -127,7 +126,7 @@ def search(
     try:
         resp = requests.post(
             "https://api.openai.com/v1/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {api_key, 'OpenAI-Beta': 'assistants=v2'}", "Content-Type": "application/json"},
             data=json.dumps(payload),
             timeout=60,
         )
@@ -145,4 +144,4 @@ def search(
     except Exception:
         raise HTTPException(status_code=502, detail="invalid JSON from upstream")
 
-# redeploy-marker: 9999999999
+# redeploy-marker: 1762130704

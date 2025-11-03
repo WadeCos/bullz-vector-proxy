@@ -1,5 +1,6 @@
 # --- Bullz Vector Proxy: clean, fully-defined app.py (no module-scope 'body' refs) ---
 import os, json, typing
+from fastapi import Header, HTTPException
 from typing import Optional
 import json
 import os
@@ -144,4 +145,12 @@ def search(body: SearchBody, x_action_secret: str = Header(None, alias="X-Action
     except Exception:
         raise HTTPException(status_code=502, detail="invalid JSON from upstream")
 
-# redeploy-marker: 1762130704
+# redeploy-marker: 1762131352
+
+
+@app.post("/authcheck")
+def authcheck(x_action_secret: str = Header(None, alias="X-Action-Secret")):
+    expected = os.getenv("ACTION_SHARED_SECRET","")
+    if not expected or x_action_secret != expected:
+        raise HTTPException(status_code=401, detail="bad secret")
+    return {"ok": True}

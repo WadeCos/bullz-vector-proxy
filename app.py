@@ -123,12 +123,12 @@ def search(
     headers = openai_headers_json()
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
-    # Primary payload (v2, tool_resources at top-level)
-    payload = {
+    user_msg = {"role": "user", "content": [{"type": "input_text", "text": body.query}]}
+
+    # 1) Preferred v2: top-level tool_resources
+    p1 = {
         "model": model,
-        "input": [
-            {"role": "user", "content": [{"type": "input_text", "text": body.query}]}
-        ],
+        "input": [user_msg],
         "tools": [{"type": "file_search"}],
         "tool_choice": "auto",
         "metadata": {"source": "bullz-vector-proxy", "namespace": body.namespace},
@@ -137,42 +137,61 @@ def search(
         "tool_resources": {"file_search": {"vector_store_ids": [vs]}},
     }
 
-    try:
-        r = requests.post("https://api.openai.com/v1/responses", headers=headers, json=payload, timeout=120)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"upstream error: {str(e)}")
+    # 2) Nested: tools[0].file_search.vector_store_ids
+    p2 = {
+        "model": model,
+        "input": [user_msg],
+        "tools": [{"type": "file_search", "file_search": {"vector_store_ids": [vs]}}],
+        "tool_choice": "auto",
+        "metadata": {"source": "bullz-vector-proxy", "namespace": body.namespace},
+        "max_output_tokens": 800,
+        "temperature": 0.2,
+    }
 
-    # If 'tool_resources' rejected or unsupported, fallback by embedding vector_store_ids into tools[0].file_search
-    if r.status_code == 400:
+    # 3) Flat (legacy): tools[0].vector_store_ids
+    p3 = {
+        "model": model,
+        "input": [user_msg],
+        "tools": [{"type": "file_search", "vector_store_ids": [vs]}],
+        "tool_choice": "auto",
+        "metadata": {"source": "bullz-vector-proxy", "namespace": body.namespace},
+        "max_output_tokens": 800,
+        "temperature": 0.2,
+    }
+
+    import requests, json
+
+    attempts = [
+        ("tool_resources", p1),
+        ("nested_file_search", p2),
+        ("flat_vector_store_ids", p3),
+    ]
+
+    results = []
+    for variant, payload in attempts:
+        try:
+            r = requests.post("https://api.openai.com/v1/responses",
+                              headers=headers, json=payload, timeout=120)
+        except Exception as e:
+            results.append({"variant": variant, "exception": str(e)})
+            continue
+
+        if r.status_code == 200:
+            return {"ok": True, "variant": variant, "response": r.json()}
+
+        # collect structured error and try next variant
         try:
             err = r.json()
         except Exception:
             err = {"text": r.text}
-        msg = json.dumps(err)
-        if ("Unknown parameter: 'tool_resources'" in msg) or ("tools[0].vector_store_ids" in msg):
-            fallback = {
-                "model": model,
-                "input": [
-                    {"role": "user", "content": [{"type": "input_text", "text": body.query}]}
-                ],
-                "tools": [{"type": "file_search", "file_search": {"vector_store_ids": [vs]}}],
-                "tool_choice": "auto",
-                "metadata": {"source": "bullz-vector-proxy", "namespace": body.namespace},
-                "max_output_tokens": 800,
-                "temperature": 0.2
-            }
-            try:
-                r2 = requests.post("https://api.openai.com/v1/responses", headers=headers, json=fallback, timeout=120)
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=f"upstream error: {str(e)}")
-            if r2.status_code != 200:
-                try:
-                    b2 = r2.json()
-                except Exception:
-                    b2 = {"text": r2.text}
-                return [{"upstream_status": r.status_code, "error": err},
-                        {"upstream_status": r2.status_code, "error": b2}], 502
-            return {"ok": True, "response": r2.json()}
+        results.append({"variant": variant, "status": r.status_code, "error": err})
+
+        # Only retry for shape-related 400s; otherwise stop early
+        if r.status_code != 400:
+            break
+
+    # Nothing worked: return all attempt diagnostics
+    return {"attempts": results}, 502
 
     if r.status_code != 200:
         try:
@@ -183,4 +202,4 @@ def search(
 
     return {"ok": True, "response": r.json()}
 
-# redeploy-marker: FINAL-FIX
+# O62134004

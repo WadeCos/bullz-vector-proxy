@@ -1,0 +1,67 @@
+openapi: 3.1.0
+info:
+  title: Bullz Vector Proxy
+  version: "1.0.0"
+  description: Upload documents into your OpenAI Vector Store and run namespace-scoped searches.
+servers:
+  - url: https://bullz-vector-proxy.onrender.com
+components:
+  securitySchemes:
+    ActionSecret:
+      type: apiKey
+      in: header
+      name: X-Action-Secret
+paths:
+  /info:
+    get:
+      summary: Service + vector store info
+      security: [ { ActionSecret: [] } ]
+      responses: { "200": { description: OK } }
+  /diag:
+    get:
+      summary: Diagnostics (keys present, expected headers)
+      security: [ { ActionSecret: [] } ]
+      responses: { "200": { description: OK } }
+  /authcheck:
+    post:
+      summary: Verify X-Action-Secret header is correct
+      security: [ { ActionSecret: [] } ]
+      responses: { "200": { description: OK } }
+  /upload:
+    post:
+      summary: Upload a file and attach it to the configured vector store
+      security: [ { ActionSecret: [] } ]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                namespace:
+                  type: string
+                  description: Logical bucket (e.g., daytrading, options, psychology)
+      responses: { "200": { description: OK } }
+  /search:
+    post:
+      summary: Query the vector store (auto-tries multiple payload variants)
+      security: [ { ActionSecret: [] } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                top_k:
+                  type: integer
+                namespace:
+                  type: string
+      responses: { "200": { description: OK } }

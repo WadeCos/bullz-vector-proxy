@@ -20,7 +20,7 @@ def require_secret(x_action_secret: Optional[str]):
 def openai_headers():
     key = os.getenv("OPENAI_API_KEY", "").strip()
     if not (key.startswith("sk-") and len(key) > 20):
-        raise HTTPException(status   de=500, detail="OPENAI_API_KEY not configured")
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
     return {
         "Authorization": f"Bearer {key}",
         "OpenAI-Beta": "assistants=v2",

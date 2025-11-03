@@ -1,11 +1,10 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: Bullz Vector Proxy
-  version: "1.0.2"
+  version: "1.0.3"
   description: Upload documents into your OpenAI Vector Store and run namespace-scoped searches.
 servers:
   - url: https://bullz-vector-proxy.onrender.com
-
 components:
   securitySchemes:
     ActionSecret:
@@ -47,16 +46,10 @@ components:
       properties:
         ok: { type: boolean }
         variant: { type: string }
-        response:
-          type: object
-          description: Model response payload (shape may vary)
-          additionalProperties: true
+        response: { type: object, additionalProperties: true }
         attempts:
           type: array
-          description: Optional diagnostics when retries occur
-          items:
-            type: object
-            additionalProperties: true
+          items: { type: object, additionalProperties: true }
       required: [ok]
       additionalProperties: true
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bullz Vector Proxy
-  version: "1.0.0"
+  version: "1.0.1"
   description: Upload documents into your OpenAI Vector Store and run namespace-scoped searches.
 servers:
   - url: https://bullz-vector-proxy.onrender.com
@@ -11,24 +11,51 @@ components:
       type: apiKey
       in: header
       name: X-Action-Secret
+  schemas: {}  # required to be an object by some validators
+
 paths:
   /info:
     get:
+      operationId: getInfo
       summary: Service + vector store info
       security: [ { ActionSecret: [] } ]
-      responses: { "200": { description: OK } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
   /diag:
     get:
+      operationId: getDiag
       summary: Diagnostics (keys present, expected headers)
       security: [ { ActionSecret: [] } ]
-      responses: { "200": { description: OK } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
   /authcheck:
     post:
+      operationId: postAuthcheck
       summary: Verify X-Action-Secret header is correct
       security: [ { ActionSecret: [] } ]
-      responses: { "200": { description: OK } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
   /upload:
     post:
+      operationId: postUpload
       summary: Upload a file and attach it to the configured vector store
       security: [ { ActionSecret: [] } ]
       requestBody:
@@ -45,9 +72,17 @@ paths:
                 namespace:
                   type: string
                   description: Logical bucket (e.g., daytrading, options, psychology)
-      responses: { "200": { description: OK } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
   /search:
     post:
+      operationId: postSearch
       summary: Query the vector store (auto-tries multiple payload variants)
       security: [ { ActionSecret: [] } ]
       requestBody:
@@ -62,6 +97,13 @@ paths:
                   type: string
                 top_k:
                   type: integer
+                  default: 6
                 namespace:
                   type: string
-      responses: { "200": { description: OK } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object

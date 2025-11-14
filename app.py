@@ -203,3 +203,4 @@ def search(
     return {"ok": True, "response": r.json()}
 
 # O62134004
+\n\n# ASGI entrypoint alias for Render/uvicorn\napp = app\n
